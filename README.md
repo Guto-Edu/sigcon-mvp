@@ -15,6 +15,7 @@ A partir desse cruzamento, o sistema gera:
 - Score preditivo de risco por contrato.
 - Ranking de prioridades para gabinete e secretarias.
 - Alertas de vencimento, documento pendente, fiscal ausente, saldo baixo e fornecedor irregular.
+- Alerta de ressuprimento por item, cruzando saldo, consumo medio, prazo de entrega e estoque minimo.
 - Detecção de inconsistências prováveis entre contrato, execução, fiscalização e documentação.
 - Mapa de gargalos por secretaria.
 - Recomendações automáticas de providência.
@@ -30,6 +31,7 @@ O foco do MVP é demonstrar inteligência de sistema, com regras preditivas e es
 - Antes do contrato vencer, o sistema sinaliza risco.
 - Antes da fiscalização falhar, o sistema mostra ausência de fiscal, checklist baixo e pendências.
 - Antes da execução estourar saldo, o sistema cruza valor atualizado, itens executados e pagamentos.
+- Antes de um item acabar, o sistema estima cobertura restante e indica quando abrir novo pedido ou licitacao.
 - Antes do gabinete ser surpreendido, o sistema apresenta gargalos por secretaria.
 - Antes de uma decisão administrativa se perder, o sistema registra recomendação e auditoria.
 
@@ -43,6 +45,7 @@ O foco do MVP é demonstrar inteligência de sistema, com regras preditivas e es
 - Aditivos, prorrogações, reajustes, reequilíbrios, supressões, acréscimos e apostilamentos.
 - Gestão documental por contrato, obrigatoriedade e status.
 - Central de alertas inteligentes.
+- Monitor de estoque minimo e pedido preventivo por item contratado.
 - Inteligência preditiva municipal com score, evidências, gargalos e recomendação de próxima ação.
 - Relatórios gerenciais e exportação CSV.
 - Histórico de auditoria por usuário, módulo, registro e ação.
@@ -62,6 +65,7 @@ Ele calcula risco usando sinais como:
 - Risco informado pela fiscalização.
 - Checklist de fiscalização baixo.
 - Saldo contratual baixo ou negativo.
+- Item abaixo do ponto de pedido, considerando consumo medio e prazo de entrega do fornecedor.
 - Ocorrências registradas.
 - Fornecedor irregular ou em atenção.
 
@@ -173,6 +177,9 @@ A seed inclui contratos de obras, saúde, educação, limpeza, transporte, tecno
 - Dias restantes calculados pela data de fim.
 - Risco automático por vencimento, fiscal ausente, documento pendente e fiscalização.
 - Alertas automáticos para vencimento, prorrogação, certidão, saldo baixo, fiscal ausente, medição atrasada, nota fiscal pendente e documento obrigatório.
+- Ressuprimento por item = saldo atual / consumo medio diario para estimar dias ate esgotar.
+- Estoque minimo = consumo medio diario x (prazo de entrega do fornecedor + dias de seguranca).
+- Alerta de pedido = dias ate esgotar - prazo de entrega - margem de seguranca; se for menor ou igual a zero, o pedido deve ser aberto agora.
 - Score preditivo por contrato com base em vigência, documentação, fiscalização, fornecedor, saldo e ocorrências.
 
 ## Próximas evoluções

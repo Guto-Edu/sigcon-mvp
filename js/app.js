@@ -34,6 +34,9 @@
   ensureDataShape();
 
   function ensureDataShape() {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      data = Utils.copyDeep(window.SIGCON_INITIAL_DATA || {});
+    }
     const fallback = Utils.copyDeep(window.SIGCON_INITIAL_DATA?.inteligencia || {});
     let changed = false;
     if (!data.inteligencia) {
@@ -51,6 +54,61 @@
       data.inteligencia.decisoes = [];
       changed = true;
     }
+    if (Array.isArray(fallback.indicadores)) {
+      data.inteligencia.indicadores = Array.isArray(data.inteligencia.indicadores) ? data.inteligencia.indicadores : [];
+      fallback.indicadores.forEach((indicator) => {
+        if (!data.inteligencia.indicadores.some((item) => item.nome === indicator.nome)) {
+          data.inteligencia.indicadores.push(indicator);
+          changed = true;
+        }
+      });
+    }
+    const seed = window.SIGCON_INITIAL_DATA || {};
+    if (!data.meta) {
+      data.meta = Utils.copyDeep(seed.meta || {});
+      changed = true;
+    }
+    [
+      'usuarios',
+      'secretarias',
+      'fornecedores',
+      'licitacoes',
+      'contratos',
+      'contrato_itens',
+      'ordens',
+      'ordem_itens',
+      'execucoes',
+      'recebimentos',
+      'notas_fiscais',
+      'empenhos',
+      'liquidacoes',
+      'pagamentos',
+      'aditivos',
+      'fiscalizacoes',
+      'ocorrencias',
+      'documentos',
+      'auditoria'
+    ].forEach((collection) => {
+      if (!Array.isArray(data[collection])) {
+        data[collection] = Utils.copyDeep(seed[collection] || []);
+        changed = true;
+      }
+    });
+    const mergeSeedFields = (collection, seedCollection, fields) => {
+      if (!Array.isArray(data[collection]) || !Array.isArray(seedCollection)) return;
+      data[collection].forEach((item) => {
+        const source = seedCollection.find((s) => s.id === item.id);
+        if (!source) return;
+        fields.forEach((field) => {
+          if (item[field] === undefined && source[field] !== undefined) {
+            item[field] = source[field];
+            changed = true;
+          }
+        });
+      });
+    };
+    mergeSeedFields('fornecedores', seed.fornecedores, ['prazo_medio_entrega_dias']);
+    mergeSeedFields('contrato_itens', seed.contrato_itens, ['consumo_medio_dia', 'prazo_entrega_fornecedor_dias', 'dias_seguranca_estoque']);
     const legacyKey = ['e', 't', 'e', 'c'].join('');
     if (data[legacyKey]) {
       delete data[legacyKey];
@@ -140,6 +198,77 @@
     };
   }
 
+  function daysSince(value) {
+    if (!value) return 1;
+    const start = new Date(value);
+    const today = new Date();
+    start.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    return Math.max(1, Math.ceil((today - start) / (1000 * 60 * 60 * 24)));
+  }
+
+  function addDaysISO(days) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + Number(days || 0));
+    return d.toISOString().slice(0, 10);
+  }
+
+  function reorderPlanningForItem(item) {
+    const c = contrato(item.contrato_id);
+    const f = fornecedor(c?.fornecedor_id);
+    const enriched = enrichItem(item);
+    const elapsedDays = daysSince(c?.data_inicio);
+    const inferredConsumption = Number(item.quantidade_executada || 0) > 0 ? Number(item.quantidade_executada || 0) / elapsedDays : 0;
+    const configuredConsumption = Number(item.consumo_medio_dia);
+    const consumption = item.consumo_medio_dia !== undefined ? configuredConsumption : inferredConsumption;
+    const monitored = consumption > 0;
+    const supplierLeadTime = Number(item.prazo_entrega_fornecedor_dias || f?.prazo_medio_entrega_dias || 10);
+    const safetyDays = Number(item.dias_seguranca_estoque ?? 5);
+    const leadWindow = supplierLeadTime + safetyDays;
+    const daysToStockout = monitored ? Math.max(0, enriched.saldo_quantidade / consumption) : 9999;
+    const daysToOrder = monitored ? Math.floor(daysToStockout - leadWindow) : 9999;
+    const minimumStock = monitored ? Math.ceil(consumption * leadWindow) : 0;
+    const nivel = !monitored
+      ? 'baixo'
+      : enriched.saldo_quantidade <= 0 || daysToOrder <= 0 || enriched.saldo_quantidade <= minimumStock
+        ? 'alto'
+        : daysToOrder <= 7 || enriched.saldo_quantidade <= minimumStock * 1.25
+          ? 'medio'
+          : 'baixo';
+    const recommendation = !monitored
+      ? 'Sem consumo medio configurado'
+      : nivel === 'alto'
+        ? 'Abrir pedido ou nova licitacao agora'
+        : nivel === 'medio'
+          ? 'Programar pedido preventivo'
+          : 'Manter monitoramento';
+    return {
+      ...enriched,
+      contrato: c,
+      fornecedor: f,
+      consumo_medio_dia_calculado: consumption,
+      consumo_inferido_dia: inferredConsumption,
+      prazo_entrega_fornecedor_dias_calculado: supplierLeadTime,
+      dias_seguranca_estoque_calculado: safetyDays,
+      estoque_minimo_calculado: minimumStock,
+      dias_ate_esgotar: daysToStockout,
+      dias_para_pedir: daysToOrder,
+      data_limite_pedido: monitored ? addDaysISO(daysToOrder) : '',
+      nivel_ressuprimento: nivel,
+      monitorado: monitored,
+      recomendacao_ressuprimento: recommendation
+    };
+  }
+
+  function reorderPlanningItems() {
+    const weight = { alto: 0, medio: 1, baixo: 2 };
+    return (data.contrato_itens || [])
+      .map(reorderPlanningForItem)
+      .filter((item) => item.monitorado)
+      .sort((a, b) => (weight[a.nivel_ressuprimento] - weight[b.nivel_ressuprimento]) || (a.dias_para_pedir - b.dias_para_pedir));
+  }
+
   function contractRisk(c) {
     const days = Utils.daysUntil(c.data_fim);
     const docsPending = data.documentos.some((d) => d.contrato_id === c.id && d.obrigatorio && d.status === 'pendente');
@@ -171,6 +300,7 @@
 
   function dashboardMetrics() {
     const contracts = data.contratos;
+    const reorderItems = reorderPlanningItems();
     const active = contracts.filter((c) => ['active', 'near_expiration'].includes(c.status)).length;
     const vencer30 = contracts.filter((c) => Utils.daysUntil(c.data_fim) >= 0 && Utils.daysUntil(c.data_fim) <= 30).length;
     const vencer60 = contracts.filter((c) => Utils.daysUntil(c.data_fim) > 30 && Utils.daysUntil(c.data_fim) <= 60).length;
@@ -184,7 +314,9 @@
     const aditivosPendentes = data.aditivos.filter((a) => a.numero.toLowerCase().includes('minuta')).length;
     const docsPendentes = data.documentos.filter((d) => d.obrigatorio && d.status === 'pendente').length;
     const pagamentosPendentes = Utils.sum(data.liquidacoes, (l) => Math.max(0, Number(l.valor_liquidado) - Utils.sum(data.pagamentos.filter((p) => p.liquidacao_id === l.id), (p) => p.valor_pago)));
-    return { active, vencer30, vencer60, vencer90, valorTotal, executado, liquidado, pago, saldo, semFiscal, aditivosPendentes, docsPendentes, pagamentosPendentes };
+    const itensPedido = reorderItems.filter((i) => i.nivel_ressuprimento === 'alto').length;
+    const itensPedido7 = reorderItems.filter((i) => i.nivel_ressuprimento !== 'alto' && i.dias_para_pedir <= 7).length;
+    return { active, vencer30, vencer60, vencer90, valorTotal, executado, liquidado, pago, saldo, semFiscal, aditivosPendentes, docsPendentes, pagamentosPendentes, itensPedido, itensPedido7 };
   }
 
   function buildAlerts() {
@@ -200,6 +332,16 @@
     });
     data.fornecedores.forEach((f) => {
       if (f.situacao === 'irregular' || Utils.normalizeText(f.certidoes).includes('vence')) alerts.push({ tipo: 'Certidão', titulo: `${f.nome_fantasia}: ${f.certidoes}`, detalhe: 'Regularidade cadastral impacta pagamento, prorrogação e nova contratação.', nivel: f.situacao === 'irregular' ? 'alto' : 'medio', fornecedor_id: f.id });
+    });
+    reorderPlanningItems().filter((item) => item.nivel_ressuprimento !== 'baixo').forEach((item) => {
+      const orderText = item.dias_para_pedir <= 0 ? 'pedido imediato' : `pedido em ate ${item.dias_para_pedir} dia(s)`;
+      alerts.push({
+        tipo: 'Ressuprimento',
+        titulo: `${item.descricao}: ${orderText}`,
+        detalhe: `Saldo ${Utils.number(item.saldo_quantidade)} ${item.unidade_medida}, estoque minimo ${Utils.number(item.estoque_minimo_calculado)} e entrega em ${item.prazo_entrega_fornecedor_dias_calculado} dia(s).`,
+        nivel: item.nivel_ressuprimento,
+        contrato_id: item.contrato_id
+      });
     });
     data.notas_fiscais.filter((n) => ['recebida', 'em_analise'].includes(n.status) && Utils.daysUntil(n.data_emissao) <= -5)
       .forEach((n) => alerts.push({ tipo: 'Nota fiscal', titulo: `${n.numero_nf} aguarda tratamento`, detalhe: `${contrato(n.contrato_id)?.numero_contrato} emitida em ${Utils.date(n.data_emissao)}.`, nivel: 'medio', contrato_id: n.contrato_id }));
@@ -257,10 +399,25 @@
     const app = $('app');
     if ($('content')) {
       renderNav();
-      $('current-user-card').innerHTML = `<p class="text-sm font-black">${Utils.escape(currentUser().nome)}</p><p class="text-xs text-white/75">${Utils.escape(currentUser().perfil)}</p>`;
-      $('user-select').value = currentUser().id;
+
+      const userCard = $('current-user-card');
+      if (userCard) {
+        userCard.innerHTML = `
+          <p class="text-sm font-black">${Utils.escape(currentUser().nome)}</p>
+          <p class="text-xs text-white/75">${Utils.escape(currentUser().perfil)}</p>
+        `;
+      }
+
+      const userSelect = $('user-select');
+      if (userSelect) {
+        userSelect.value = currentUser().id;
+      }
+
       const globalInput = $('global-search');
-      if (globalInput && document.activeElement !== globalInput) globalInput.value = currentSearch;
+      if (globalInput && document.activeElement !== globalInput) {
+        globalInput.value = currentSearch;
+      }
+
       hydrateIcons();
       return;
     }
@@ -303,10 +460,21 @@
   function renderNav() {
     const nav = $('nav-list');
     if (!nav) return;
+
     nav.innerHTML = navItems.map(([key, iconName, label]) => `
-      <button class="nav-item ${currentView === key ? 'active' : ''}" onclick="navigate('${key}')">
-        <span class="nav-icon">${icon(iconName)}</span><span class="truncate">${label}</span>${navBadge(key)}
-      </button>`).join('');
+      <button type="button" class="nav-item ${currentView === key ? 'active' : ''}" data-view="${key}">
+        <span class="nav-icon">${icon(iconName)}</span>
+        <span class="truncate">${label}</span>
+        ${navBadge(key)}
+      </button>
+    `).join('');
+
+    nav.querySelectorAll('[data-view]').forEach((button) => {
+      button.addEventListener('click', () => {
+        window.navigate(button.dataset.view);
+      });
+    });
+
     hydrateIcons();
   }
 
@@ -346,6 +514,7 @@
           ${kpiCard('Vencem em 30 dias', m.vencer30, 'timer', 'yellow', `${m.vencer60} em 60 dias, ${m.vencer90} em 90 dias`)}
           ${kpiCard('Valor total contratado', Utils.currency(m.valorTotal), 'landmark', 'blue')}
           ${kpiCard('Saldo contratual', Utils.currency(m.saldo), 'wallet-cards', m.saldo < 0 ? 'red' : 'green')}
+          ${kpiCard('Itens para pedir', m.itensPedido, 'package-search', m.itensPedido ? 'red' : 'green', `${m.itensPedido7} em ate 7 dias`)}
           ${kpiCard('Executado', Utils.currency(m.executado), 'activity', 'purple', `${Utils.number(Utils.perc(m.executado, m.valorTotal), 1)}% do contratado`)}
           ${kpiCard('Liquidado / pago', Utils.currency(m.liquidado), 'receipt', 'blue', `${Utils.currency(m.pago)} pago`)}
           ${kpiCard('Aditivos pendentes', m.aditivosPendentes, 'file-clock', 'yellow', 'Minutas ou análise em aberto')}
@@ -420,9 +589,33 @@
     </tr>`;
   }
 
+  function reorderPlanningTableRows(items = reorderPlanningItems()) {
+    return items.map((item) => ({
+      Item: `<p class="font-black">${Utils.escape(item.descricao)}</p><p class="text-xs text-slate-500 font-bold">${Utils.escape(item.fornecedor?.nome_fantasia || '-')} - ${Utils.escape(secretaria(item.contrato?.secretaria_id)?.sigla || '-')}</p>`,
+      Contrato: item.contrato?.numero_contrato || '-',
+      Saldo: `${Utils.number(item.saldo_quantidade)} ${item.unidade_medida}`,
+      'Consumo/dia': Utils.number(item.consumo_medio_dia_calculado, 2),
+      'Esgota em': item.dias_ate_esgotar >= 9999 ? '-' : `${Utils.number(item.dias_ate_esgotar, 0)} dia(s)`,
+      Entrega: `${item.prazo_entrega_fornecedor_dias_calculado} dia(s)`,
+      'Estoque minimo': `${Utils.number(item.estoque_minimo_calculado)} ${item.unidade_medida}`,
+      'Pedir ate': item.dias_para_pedir <= 0 ? 'Agora' : Utils.date(item.data_limite_pedido),
+      Status: Utils.badge(item.nivel_ressuprimento)
+    }));
+  }
+
   function renderExecucao() {
     setContent(`
       ${pageTitle('Execução contratual', 'Ordens, medições, notas e pagamentos', 'Fluxo simulado de ordem de fornecimento/serviço, medição, ateste, liquidação e pagamento.', `<button class="btn btn-primary" onclick="openOrderForm()">${icon('plus')}Nova ordem</button><button class="btn btn-soft" onclick="openExecutionForm()">${icon('clipboard-plus')}Registrar medição</button><button class="btn btn-soft" onclick="openNFForm()">${icon('receipt')}Nova NF</button>`)}
+      <section class="sig-card p-5 mb-6">
+        <div class="flex flex-col md:flex-row md:items-start justify-between gap-3 mb-4">
+          <div>
+            <h3 class="font-black text-lg">Monitor de estoque minimo e ressuprimento</h3>
+            <p class="text-sm text-slate-500 font-semibold mt-1">Calcula quando pedir novamente cruzando saldo do item, consumo medio, prazo de entrega e margem de seguranca.</p>
+          </div>
+          <span class="badge badge-blue">${reorderPlanningItems().length} item(ns) monitorado(s)</span>
+        </div>
+        ${miniTable(reorderPlanningTableRows())}
+      </section>
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-5 mb-6">
         ${executionSummaryCard('Ordens de serviço/fornecimento', data.ordens.map((o) => ({ Ordem: o.numero, Contrato: contrato(o.contrato_id)?.numero_contrato, Prevista: Utils.date(o.data_prevista), Status: Utils.statusLabel(o.status), Valor: Utils.currency(Utils.sum(data.ordem_itens.filter((i) => i.ordem_id === o.id), (i) => i.valor_total)) })), 'truck')}
         ${executionSummaryCard('Medições e entregas', data.execucoes.map((e) => ({ Registro: e.id, Contrato: contrato(e.contrato_id)?.numero_contrato, Tipo: Utils.typeLabel(e.tipo), Valor: Utils.currency(e.valor_executado), Status: Utils.statusLabel(e.status) })), 'clipboard-check')}
@@ -469,12 +662,14 @@
 
   function renderAlertas() {
     const alerts = buildAlerts();
+    const reorderCritical = reorderPlanningItems().filter((i) => i.nivel_ressuprimento === 'alto').length;
     setContent(`
       ${pageTitle('Central de alertas', 'Alertas inteligentes', 'Vencimentos, prorrogação, certidões, saldo baixo, fiscal ausente, pagamento, medição, garantia e documentos obrigatórios.', `<button class="btn btn-soft" onclick="toast('Alertas recalculados com base nos dados mockados.')">${icon('refresh-cw')}Recalcular</button>`)}
-      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-5">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
         ${kpiCard('Críticos', alerts.filter((a) => a.nivel === 'alto').length, 'circle-alert', 'red')}
         ${kpiCard('Atenção', alerts.filter((a) => a.nivel !== 'alto').length, 'triangle-alert', 'yellow')}
         ${kpiCard('Contratos monitorados', data.contratos.length, 'radar', 'blue')}
+        ${kpiCard('Itens em ponto de pedido', reorderCritical, 'package-search', reorderCritical ? 'red' : 'green')}
       </div>
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">${alerts.map(alertCard).join('') || emptyState('Sem alertas', 'Nenhuma regra automática acionada.')}</div>`);
   }
@@ -487,7 +682,7 @@
   }
 
   function renderRelatorios() {
-    const reports = ['Contratos por secretaria', 'Contratos por fornecedor', 'Contratos vencendo', 'Contratos vencidos', 'Valores por categoria', 'Execução financeira', 'Aditivos por período', 'Pendências de fiscalização', 'Relatório para transparência'];
+    const reports = ['Contratos por secretaria', 'Contratos por fornecedor', 'Contratos vencendo', 'Contratos vencidos', 'Valores por categoria', 'Execução financeira', 'Ressuprimento por item', 'Aditivos por período', 'Pendências de fiscalização', 'Relatório para transparência'];
     setContent(`
       ${pageTitle('Inteligência pública', 'Relatórios', 'Relatórios simulados para gestão, controle interno, jurídico, fiscalização e transparência.', `<button class="btn btn-soft" onclick="printReport()">${icon('printer')}Imprimir</button><button class="btn btn-primary" onclick="downloadReportCSV()">${icon('file-spreadsheet')}Exportar CSV</button>`)}
       <div class="sig-card p-5 mb-6"><div class="grid grid-cols-1 md:grid-cols-5 gap-3"><select id="report-type" class="select md:col-span-2">${reports.map((r) => `<option>${r}</option>`).join('')}</select><input id="report-start" type="date" class="input"><input id="report-end" type="date" class="input"><button class="btn btn-primary" onclick="generateReport()">${icon('play')}Gerar relatório</button></div><div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3"><select id="report-contract" class="select"><option value="">Todos contratos</option>${data.contratos.map((c) => `<option value="${c.id}">${c.numero_contrato}</option>`).join('')}</select><select id="report-fornecedor" class="select"><option value="">Todos fornecedores</option>${data.fornecedores.map((f) => `<option value="${f.id}">${f.nome_fantasia}</option>`).join('')}</select><select id="report-status" class="select"><option value="">Todos status</option>${contractStatuses.map((s) => `<option value="${s}">${Utils.statusLabel(s)}</option>`).join('')}</select><select id="report-secretaria" class="select"><option value="">Todas secretarias</option>${data.secretarias.map((s) => `<option value="${s.id}">${s.nome}</option>`).join('')}</select></div></div>
@@ -501,9 +696,11 @@
     const inconsistencias = data.ocorrencias.length + pendentes + data.contratos.filter((c) => contractRisk(c) === 'alto').length;
     const vencidos = data.contratos.filter((c) => Utils.daysUntil(c.data_fim) < 0 && c.status !== 'closed').length;
     const secretariasAderentes = new Set(data.contratos.map((c) => c.secretaria_id).filter(Boolean)).size;
+    const itensPedidoPreventivo = reorderPlanningItems().filter((item) => item.nivel_ressuprimento === 'alto').length;
     const live = {
       'Contratos cadastrados e monitorados': data.contratos.length,
       'Documentos classificados corretamente': docsClassificados,
+      'Itens com pedido preventivo acionado': itensPedidoPreventivo,
       'Alertas úteis gerados': alerts.length,
       'Inconsistências detectadas': inconsistencias,
       'Contratos vencidos sem providência': vencidos,
@@ -524,6 +721,7 @@
     const ocorrencias = data.ocorrencias.filter((o) => o.contrato_id === c.id).length;
     const fiscal = data.fiscalizacoes.find((f) => f.contrato_id === c.id);
     const fornecedorAtual = fornecedor(c.fornecedor_id);
+    const reorderItems = data.contrato_itens.filter((item) => item.contrato_id === c.id).map(reorderPlanningForItem);
     let score = 12;
     if (days < 0) score += 34;
     else if (days <= 15) score += 26;
@@ -536,6 +734,8 @@
     if (fiscal?.checklist < 70) score += 10;
     if (calc.saldoContratual <= calc.valorAtual * .12 && c.status !== 'closed') score += 10;
     if (calc.saldoContratual < 0) score += 18;
+    if (reorderItems.some((item) => item.nivel_ressuprimento === 'alto')) score += 15;
+    else if (reorderItems.some((item) => item.nivel_ressuprimento === 'medio')) score += 8;
     if (ocorrencias) score += Math.min(18, ocorrencias * 6);
     if (fornecedorAtual?.situacao === 'irregular') score += 18;
     if (fornecedorAtual?.situacao === 'atenção') score += 8;
@@ -555,6 +755,7 @@
     const fiscal = data.fiscalizacoes.find((f) => f.contrato_id === c.id);
     const ocorrencias = data.ocorrencias.filter((o) => o.contrato_id === c.id);
     const fornecedorAtual = fornecedor(c.fornecedor_id);
+    const reorderItems = data.contrato_itens.filter((item) => item.contrato_id === c.id).map(reorderPlanningForItem);
     const evidencias = [];
     const acoes = [];
     if (days < 0) { evidencias.push(`vigência vencida há ${Math.abs(days)} dia(s)`); acoes.push('abrir providência de encerramento, regularização ou nova contratação'); }
@@ -567,6 +768,12 @@
     if (calc.saldoContratual < 0) { evidencias.push('execução acima do valor contratual atualizado'); acoes.push('bloquear nova execução até revisão financeira'); }
     if (ocorrencias.length) { evidencias.push(`${ocorrencias.length} ocorrência(s) registrada(s)`); acoes.push('consolidar ocorrência em despacho ou notificação'); }
     if (fornecedorAtual?.situacao === 'irregular') { evidencias.push(`fornecedor irregular: ${fornecedorAtual.certidoes}`); acoes.push('impedir pagamento/prorrogação sem análise jurídica'); }
+    const reorderCritical = reorderItems.filter((item) => item.monitorado && item.nivel_ressuprimento !== 'baixo');
+    if (reorderCritical.length) {
+      const item = reorderCritical[0];
+      evidencias.push(`${reorderCritical.length} item(ns) em ponto de ressuprimento; ${item.descricao} esgota em ${Utils.number(item.dias_ate_esgotar, 0)} dia(s)`);
+      acoes.push('abrir pedido ou nova licitacao antes de ruptura de estoque');
+    }
     if (!evidencias.length) {
       evidencias.push('sem inconsistência crítica detectada com os dados atuais');
       acoes.push('manter monitoramento preventivo');
@@ -719,7 +926,7 @@
     const c = contrato(currentContractId);
     if (!c) return;
     const calc = computeContract(c.id);
-    const tabs = ['resumo', 'linha_tempo', 'execucao', 'fiscalizacao', 'aditivos', 'documentos', 'ocorrencias', 'auditoria'];
+    const tabs = ['resumo', 'itens', 'linha_tempo', 'execucao', 'fiscalizacao', 'aditivos', 'documentos', 'ocorrencias', 'auditoria'];
     const root = $('drawer-root');
     root.classList.remove('hidden');
     root.innerHTML = `<div class="drawer-backdrop" onclick="closeDrawer()"></div><aside class="drawer-panel"><div class="drawer-head p-6"><div class="flex flex-col xl:flex-row justify-between gap-4"><div><p class="text-xs uppercase tracking-[.22em] text-slate-400 font-black">Dossiê contratual</p><h2 class="text-2xl font-black">${c.numero_contrato} - ${Utils.statusLabel(c.status)}</h2><p class="text-sm text-slate-500 font-semibold max-w-4xl">${Utils.escape(c.objeto)}</p></div><div class="flex flex-wrap gap-2 items-start"><button class="btn btn-primary" onclick="openContractForm('${c.id}')">${icon('pencil')}Editar</button><button class="btn btn-soft" onclick="contractReport('${c.id}')">${icon('printer')}Relatório</button><button class="btn btn-soft" onclick="closeDrawer()">${icon('x')}Fechar</button></div></div><div class="mt-5 flex gap-2 overflow-x-auto pb-1">${tabs.map((t) => `<button class="tab-btn ${currentContractTab === t ? 'active' : ''}" onclick="setContractTab('${t}')">${tabIcon(t)}${tabLabel(t)}</button>`).join('')}</div></div><div class="p-6">${contractTabContent(c, calc)}</div></aside>`;
@@ -727,17 +934,18 @@
   }
 
   function tabIcon(t) {
-    return icon({ resumo: 'panel-top', linha_tempo: 'git-branch', execucao: 'workflow', fiscalizacao: 'clipboard-check', aditivos: 'file-pen-line', documentos: 'folder-open', ocorrencias: 'message-square-warning', auditoria: 'history' }[t] || 'circle');
+    return icon({ resumo: 'panel-top', itens: 'package-search', linha_tempo: 'git-branch', execucao: 'workflow', fiscalizacao: 'clipboard-check', aditivos: 'file-pen-line', documentos: 'folder-open', ocorrencias: 'message-square-warning', auditoria: 'history' }[t] || 'circle');
   }
 
   function tabLabel(t) {
-    return { resumo: 'Resumo', linha_tempo: 'Linha do tempo', execucao: 'Execução', fiscalizacao: 'Fiscalização', aditivos: 'Aditivos', documentos: 'Documentos', ocorrencias: 'Ocorrências', auditoria: 'Auditoria' }[t] || t;
+    return { resumo: 'Resumo', itens: 'Itens', linha_tempo: 'Linha do tempo', execucao: 'Execução', fiscalizacao: 'Fiscalização', aditivos: 'Aditivos', documentos: 'Documentos', ocorrencias: 'Ocorrências', auditoria: 'Auditoria' }[t] || t;
   }
 
   function contractTabContent(c, calc) {
     if (currentContractTab === 'resumo') {
       return `<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">${kpiCard('Valor original', Utils.currency(c.valor_original), 'landmark', 'blue')}${kpiCard('Valor atualizado', Utils.currency(calc.valorAtual), 'wallet', 'green')}${kpiCard('Liquidado / pago', Utils.currency(calc.valorLiquidado), 'receipt', 'purple', `${Utils.currency(calc.valorPago)} pago`)}${kpiCard('Saldo', Utils.currency(calc.saldoContratual), 'wallet-cards', calc.saldoContratual < 0 ? 'red' : 'green')}</div><div class="sig-card p-5"><h3 class="font-black mb-4">Resumo administrativo</h3><div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 text-sm font-semibold">${statBox('Processo', c.processo_administrativo)}${statBox('Modalidade', c.modalidade)}${statBox('Licitação', c.numero_licitacao || '-')}${statBox('Fornecedor', fornecedor(c.fornecedor_id)?.razao_social)}${statBox('Secretaria', secretaria(c.secretaria_id)?.nome)}${statBox('Unidade gestora', c.unidade_gestora)}${statBox('Gestor', usuario(c.gestor_id)?.nome || '-')}${statBox('Fiscal titular', usuario(c.fiscal_titular_id)?.nome || 'Não designado')}${statBox('Fiscal suplente', usuario(c.fiscal_suplente_id)?.nome || 'Não designado')}${statBox('Dotação', c.dotacao_orcamentaria)}${statBox('Fonte', c.fonte_recurso)}${statBox('Garantia', c.garantia || '-')}</div><div class="mt-5"><div class="progress ${calc.progresso > 90 ? 'danger' : ''}"><span style="width:${calc.progresso}%"></span></div><p class="text-xs font-bold text-slate-500 mt-1">Execução financeira simulada ${Utils.number(calc.progresso, 1)}%</p></div><p class="text-sm text-slate-600 font-semibold mt-4">${Utils.escape(c.observacoes || '')}</p></div>`;
     }
+    if (currentContractTab === 'itens') return miniTable(reorderPlanningTableRows(data.contrato_itens.filter((item) => item.contrato_id === c.id).map(reorderPlanningForItem)));
     if (currentContractTab === 'linha_tempo') return miniTimeline(contractTimeline(c));
     if (currentContractTab === 'execucao') return miniTable([
       ...data.ordens.filter((o) => o.contrato_id === c.id).map((o) => ({ Tipo: 'Ordem', Registro: o.numero, Data: Utils.date(o.data_solicitacao), Status: Utils.statusLabel(o.status), Valor: Utils.currency(Utils.sum(data.ordem_itens.filter((i) => i.ordem_id === o.id), (i) => i.valor_total)) })),
@@ -784,7 +992,16 @@
     return list.map((x) => `<option value="${x.id}" ${x.id === selected ? 'selected' : ''}>${Utils.escape(labelFn(x))}</option>`).join('');
   }
 
-  window.navigate = function (key) { currentView = key; currentSearch = ''; filters = { status: '', secretaria: '', categoria: '', fornecedor: '' }; render(); };
+  window.navigate = function (key) {
+    currentView = key;
+    currentSearch = '';
+    filters = { status: '', secretaria: '', categoria: '', fornecedor: '' };
+    render();
+
+    if (window.innerWidth < 1024) {
+      $('sidebar')?.classList.remove('open');
+    }
+  };
   window.globalSearch = function (value) { currentSearch = value; render(); };
   window.toggleSidebar = function () { $('sidebar')?.classList.toggle('open'); };
   window.changeUser = function (id) { StorageService.setCurrentUserId(id); toast('Perfil simulado alterado. As próximas ações serão auditadas com esse usuário.'); render(); };
@@ -1037,6 +1254,7 @@
     if (type === 'Contratos vencidos') return data.contratos.filter((c) => Utils.daysUntil(c.data_fim) < 0).map((c) => ({ Contrato: c.numero_contrato, Fornecedor: fornecedor(c.fornecedor_id)?.nome_fantasia, Vencimento: Utils.date(c.data_fim), Saldo: Utils.currency(computeContract(c.id).saldoContratual) }));
     if (type === 'Valores por categoria') return [...new Set(data.contratos.map((c) => c.categoria))].map((cat) => ({ Categoria: Utils.typeLabel(cat), Contratos: data.contratos.filter((c) => c.categoria === cat).length, Valor: Utils.currency(Utils.sum(data.contratos.filter((c) => c.categoria === cat), (c) => computeContract(c.id).valorAtual)) }));
     if (type === 'Execução financeira') return data.contratos.map((c) => ({ Contrato: c.numero_contrato, Atualizado: Utils.currency(computeContract(c.id).valorAtual), Executado: Utils.currency(computeContract(c.id).valorExecutado), Liquidado: Utils.currency(computeContract(c.id).valorLiquidado), Pago: Utils.currency(computeContract(c.id).valorPago), Saldo: Utils.currency(computeContract(c.id).saldoContratual) }));
+    if (type === 'Ressuprimento por item') return reorderPlanningItems().map((item) => ({ Item: item.descricao, Contrato: item.contrato?.numero_contrato, Fornecedor: item.fornecedor?.nome_fantasia, Secretaria: secretaria(item.contrato?.secretaria_id)?.sigla, Saldo: `${Utils.number(item.saldo_quantidade)} ${item.unidade_medida}`, ConsumoDia: Utils.number(item.consumo_medio_dia_calculado, 2), EsgotaEmDias: Utils.number(item.dias_ate_esgotar, 0), PrazoEntregaDias: item.prazo_entrega_fornecedor_dias_calculado, EstoqueMinimo: Utils.number(item.estoque_minimo_calculado), PedirAte: item.dias_para_pedir <= 0 ? 'Agora' : Utils.date(item.data_limite_pedido), Status: Utils.statusLabel(item.nivel_ressuprimento), Recomendacao: item.recomendacao_ressuprimento }));
     if (type === 'Aditivos por período') return data.aditivos.map((a) => ({ Contrato: contrato(a.contrato_id)?.numero_contrato, Número: a.numero, Tipo: Utils.typeLabel(a.tipo), Data: Utils.date(a.data_aditivo), NovoValor: Utils.currency(a.novo_valor), NovoPrazo: Utils.date(a.nova_data_fim) }));
     if (type === 'Pendências de fiscalização') return data.fiscalizacoes.filter((f) => f.pendencias_abertas > 0).map((f) => ({ Contrato: contrato(f.contrato_id)?.numero_contrato, Fiscal: usuario(f.fiscal_id)?.nome || 'Não designado', Risco: Utils.statusLabel(f.risco), Pendências: f.pendencias_abertas, Parecer: f.parecer }));
     return data.contratos.map((c) => ({ Contrato: c.numero_contrato, Objeto: c.objeto, Fornecedor: fornecedor(c.fornecedor_id)?.nome_fantasia, Secretaria: secretaria(c.secretaria_id)?.sigla, Valor: Utils.currency(computeContract(c.id).valorAtual), Vigência: `${Utils.date(c.data_inicio)} a ${Utils.date(c.data_fim)}`, Status: Utils.statusLabel(c.status) }));
