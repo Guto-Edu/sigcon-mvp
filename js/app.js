@@ -270,9 +270,6 @@
           <div class="h-14 flex items-center"><img src="assets/logo-comprida.png" alt="SIGCON" class="w-[210px] max-h-14 object-contain" /></div>
         </div>
         <nav class="flex-1 overflow-y-auto p-4 space-y-1" id="nav-list" aria-label="Navegação principal"></nav>
-        <div class="p-4 border-t border-white/15">
-          <div id="current-user-card" class="rounded-2xl bg-white/13 border border-white/15 p-3"></div>
-        </div>
       </aside>
       <main class="main-with-sidebar ml-[292px] min-h-screen">
         <header class="sticky top-0 z-30 bg-[#F4F8FB]/88 backdrop-blur-xl border-b border-[#DDE8F4]">
