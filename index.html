@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SIGCON Obras - Gestão de Contratos Públicos</title>
+  <link rel="icon" href="assets/favicon.ico" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            sig: {
+              green: '#07B56A',
+              greenDark: '#069556',
+              blue: '#0B5CAD',
+              ink: '#07152F',
+              muted: '#637693',
+              bg: '#F3F7FB'
+            }
+          },
+          boxShadow: {
+            soft: '0 12px 35px rgba(7, 21, 47, 0.08)',
+            card: '0 6px 20px rgba(7, 21, 47, 0.07)'
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body class="bg-sig-bg text-sig-ink antialiased">
+  <div id="app" class="min-h-screen"></div>
+
+  <div id="modal-root" class="hidden fixed inset-0 z-50"></div>
+  <div id="drawer-root" class="hidden fixed inset-0 z-40"></div>
+  <div id="toast-root" class="fixed bottom-5 right-5 z-[70] space-y-3"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+<svg width="260" height="84" viewBox="0 0 260 84" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="260" height="84" rx="18" fill="#07B56A"/>
+  <circle cx="48" cy="42" r="24" fill="white" fill-opacity=".18"/>
+  <path d="M48 20a22 22 0 1022 22H50v12h7.8A13 13 0 1134.9 34L25 28.8A22 22 0 0148 20z" fill="white"/>
+  <path d="M69 42h20v12H69V42z" fill="white"/>
+  <text x="96" y="40" font-family="Inter, Arial, sans-serif" font-weight="800" font-size="27" fill="white">SIGCON</text>
+  <text x="98" y="58" font-family="Inter, Arial, sans-serif" font-weight="600" font-size="8" letter-spacing=".4" fill="white" fill-opacity=".9">OBRAS • GESTÃO PÚBLICA</text>
+</svg>
